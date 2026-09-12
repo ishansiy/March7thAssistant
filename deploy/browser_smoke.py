@@ -61,6 +61,32 @@ try:
         elapsed[0] += seconds
     assert queue.wait_in_queue(controller, 120, clock=lambda: elapsed[0], sleep=advance)
     assert elapsed[0] == 30
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from threading import Thread
+    from selenium.webdriver.support.ui import WebDriverWait
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'<h1>storage-ready</h1>')
+        def log_message(self, *args):
+            pass
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        spec = importlib.util.spec_from_file_location('cloud_storage', '/m7a/module/game/cloud_storage.py')
+        storage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(storage)
+        url = f'http://127.0.0.1:{server.server_port}/'
+        assert driver.execute_script(storage.STORAGE_READY_SCRIPT, url) is False
+        storage.ensure_game_storage(driver, url, WebDriverWait(driver, 5))
+        driver.execute_script("localStorage.setItem('probe', 'ready')")
+        assert driver.execute_script("return localStorage.getItem('probe')") == 'ready'
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
     print(f'Chrome renderer, CDP, iframe and screenshot passed in {time.monotonic() - started:.1f}s')
 finally:
     driver.quit()

@@ -18,6 +18,7 @@ jobs:
         run: |
           python tests/test_cloud_entry.py
           python tests/test_cloud_queue.py
+          python tests/test_cloud_storage.py
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0

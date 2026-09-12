@@ -28,6 +28,7 @@ from selenium.common.exceptions import WebDriverException
 from module.config import Config
 from module.game.base import GameControllerBase
 from module.game.cloud_queue import PAGE_READY_SCRIPT, wait_in_queue
+from module.game.cloud_storage import ensure_game_storage
 from module.logger import Logger
 # from utils.encryption import wdp_encrypt, wdp_decrypt
 
@@ -543,6 +544,7 @@ class CloudGameController(GameControllerBase):
             self.log_error(f"浏览器启动失败: {e}")
             raise RuntimeError("浏览器启动失败")
 
+        ensure_game_storage(self.driver, self.GAME_URL, WebDriverWait(self.driver, 30))
         self._configure_pointer_lock(headless)
         if not self.cfg.cloud_game_fullscreen_enable:
             self.driver.set_window_size(1920, 1120)
