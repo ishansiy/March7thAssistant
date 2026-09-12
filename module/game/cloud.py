@@ -27,6 +27,7 @@ from selenium.common.exceptions import WebDriverException
 
 from module.config import Config
 from module.game.base import GameControllerBase
+from module.game.cloud_queue import PAGE_READY_SCRIPT, wait_in_queue
 from module.logger import Logger
 # from utils.encryption import wdp_encrypt, wdp_decrypt
 
@@ -149,7 +150,7 @@ class CloudGameController(GameControllerBase):
         atexit.register(self._clean_at_exit)
 
     def _wait_game_page_loaded(self, timeout=30) -> None:
-        """等待云崩铁网页加载出来，这里以背景图是否加载出来为准"""
+        """等待首页、登录、排队或游戏界面的可见功能元素"""
         if not self.driver:
             return
         for retry in range(self.MAX_RETRIES + 1):
@@ -158,13 +159,7 @@ class CloudGameController(GameControllerBase):
                 self.driver.refresh()
             try:
                 WebDriverWait(self.driver, timeout).until(
-                    lambda d: d.execute_script(
-                        """
-                        const img = document.querySelector('#app > div.home-wrapper > picture > img');
-                        if (!img) return false;
-                        return img && img.complete && img.naturalWidth > 0;
-                        """
-                    )
+                    lambda d: d.execute_script(PAGE_READY_SCRIPT)
                 )
                 return
             except TimeoutException:
@@ -756,98 +751,15 @@ class CloudGameController(GameControllerBase):
             return False
 
     def _wait_in_queue(self, timeout=600) -> bool:
-        """排队等待进入"""
-        in_queue_selector = "[class*='waiting-in-queue']"
-        cloud_game_selector = ".game-player"
-        select_queue_selector = "[aria-labelledby*='请选择排队队列']"
-
+        """等待明确的排队/游戏状态，失败时保存页面证据。"""
         try:
-            # 检查是否需要排队
-            status = WebDriverWait(self.driver, 10).until(
-                lambda d: d.execute_script("""
-                    if (document.querySelector(arguments[0])) return "game_running";
-                    else if (document.querySelector(arguments[1])) return "in_queue";
-                    else if (document.querySelector(arguments[2])) return "select_queue";
-                    else return null;
-                """, cloud_game_selector, in_queue_selector, select_queue_selector)
-            )
-
-            select_retries = 0
-            while status == "select_queue":
-                select_retries += 1
-                if select_retries >= 5:
-                    self.log_error("选择排队队列超时")
-                    return False
-
-                if self.cfg.cloud_game_use_paid_time and getattr(self, '_paid_time', 0) > 0:
-                    self.log_info("检测到选择排队队列界面，配置开启了使用付费时间，选择快速队列")
-                    self.driver.execute_script("""
-                        try {
-                            document.getElementsByClassName("coin-prior-choose-item-include-info")[0].click();
-                        } catch(e) {}
-                    """)
-                else:
-                    if self.cfg.cloud_game_use_paid_time:
-                        # self.cfg.cloud_game_use_paid_time = False
-                        self.log_warning("当前账号付费时间不足，已切换为免费时间。")
-                    self.log_info("检测到选择排队队列界面，选择普通队列")
-                    self.driver.execute_script("""
-                        try {
-                            document.getElementsByClassName("coin-prior-choose-item-include-info")[1].click();
-                        } catch(e) {}
-                    """)
-                time.sleep(2)
-                status = WebDriverWait(self.driver, 10).until(
-                    lambda d: d.execute_script("""
-                        if (document.querySelector(arguments[0])) return "game_running";
-                        else if (document.querySelector(arguments[1])) return "in_queue";
-                        else if (document.querySelector(arguments[2])) return "select_queue";
-                        else return null;
-                    """, cloud_game_selector, in_queue_selector, select_queue_selector)
-                )
-
-            if status == "game_running":
-                self.log_info("游戏已启动，无需排队，等待游戏画面加载...")
-                self._wait_game_canvas_ready()
-                return True
-            elif status == "in_queue":
-                self.log_info("正在排队...")
-                last_wait_time = None
-                poll_interval = 5  # 每5秒检测一次
-                start_time = time.monotonic()
-                while time.monotonic() - start_time < timeout:
-                    # 检查是否已退出排队
-                    if not self.driver.find_elements(By.CSS_SELECTOR, in_queue_selector):
-                        self.log_info("排队成功，等待游戏画面加载...")
-                        self._wait_game_canvas_ready()
-                        return True
-                    # 检测预计等待时间
-                    wait_time = self.driver.execute_script("""
-                        // 方式1: "预估排队时间30分钟以上，建议开拓者错峰进行游戏~"
-                        var timeHide = document.querySelector('.time-hide__text');
-                        if (timeHide && timeHide.textContent) {
-                            return timeHide.textContent.trim();
-                        }
-                        // 方式2: "预计等待时间 10~20 分钟"
-                        var singleRow = document.querySelector('.single-row');
-                        if (singleRow) {
-                            var valEl = singleRow.querySelector('.single-row__val');
-                            if (valEl && valEl.textContent) {
-                                return '预计等待时间: ' + valEl.textContent.replace(/\\s+/g, '').trim();
-                            }
-                        }
-                        return null;
-                    """)
-                    if wait_time and wait_time != last_wait_time:
-                        self.log_info(f"当前状态: {wait_time}")
-                        last_wait_time = wait_time
-                    time.sleep(poll_interval)
-                self.log_error("排队超时")
-                return False
+            return wait_in_queue(self, timeout)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.log_error(f"等待排队异常: {e}")
+            self.log_error(f"等待排队失败: {e}")
+            try:
+                self.try_dump_page()
+            except Exception as dump_error:
+                self.log_warning(f"保存排队诊断页面失败: {type(dump_error).__name__}")
             return False
 
     def _check_time_insufficient_dialog(self) -> bool:
