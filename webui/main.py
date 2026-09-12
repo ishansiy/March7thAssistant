@@ -363,6 +363,28 @@ def get_log(log_file: str, user: UserInfo = Depends(get_current_user)):
         return {"content": f"Failed to read log: {str(e)}"}
 
 
+@app.get("/api/diagnostics")
+def list_diagnostics(user: UserInfo = Depends(require_admin)):
+    from pathlib import Path
+    directory = Path(ROOT_DIR) / 'logs' / 'webdump'
+    return sorted([p.name for p in directory.glob('*')
+                   if p.is_file() and not p.is_symlink() and p.suffix in ('.png', '.html')], reverse=True)
+
+
+@app.get("/api/diagnostics/{filename}")
+def get_diagnostic(filename: str, user: UserInfo = Depends(require_admin)):
+    from pathlib import Path
+    directory = (Path(ROOT_DIR) / 'logs' / 'webdump').resolve()
+    path = directory / filename
+    if (Path(filename).name != filename or path.is_symlink()
+            or path.resolve().parent != directory
+            or path.suffix not in ('.png', '.html') or not path.is_file()):
+        raise HTTPException(status_code=404, detail='Diagnostic not found')
+    # HTML is downloaded as text, never executed in the authenticated WebUI origin.
+    return FileResponse(path, media_type='image/png' if path.suffix == '.png' else 'text/plain',
+                        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
 @app.post("/api/run/start")
 def start_run(user: UserInfo = Depends(require_admin)):
     if scheduler.start_run():
