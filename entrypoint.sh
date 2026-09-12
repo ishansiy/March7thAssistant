@@ -7,4 +7,5 @@ if [ "$(uname -m)" = "aarch64" ]; then
   export MARCH7TH_DRIVER_PATH=/usr/bin/chromedriver
 fi
 
+python /opt/m7a-persist.py
 exec "$@"

@@ -41,6 +41,7 @@ ENV MARCH7TH_DOCKER_STARTED=true
 WORKDIR /m7a
 
 COPY pyproject.toml uv.lock ./
+COPY webui/requirements.txt ./webui/requirements.txt
 
 # ======================
 # System dependencies
@@ -49,6 +50,8 @@ RUN \
     # 如果需要使用国内源，可以取消下面一行的注释
     # sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -yq --no-install-recommends \
+    # Lightweight init for proper zombie reaping (PID 1)
+    tini \
     # Dependencies for OpenCV
     libgl1 \
     # Dependencies for headless Chrome
@@ -90,6 +93,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
 RUN uv sync --only-group docker
     # 如果需要使用国内源，可以取消下面一行的注释
     # RUN uv sync --only-group docker --index-url https://mirrors.cloud.tencent.com/pypi/simple/
+RUN uv pip install -r webui/requirements.txt
 
 COPY build.py ./
 
@@ -108,8 +112,16 @@ RUN python build.py --task ocr \
 # ======================
 # arm64 browser env
 # ======================
+COPY deploy/persist.py /opt/m7a-persist.py
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "main.py"]
+ENV PORT=7860 \
+    HOME=/mnt/workspace/home \
+    XDG_CACHE_HOME=/mnt/workspace/cache \
+    TMPDIR=/mnt/workspace/tmp
+EXPOSE 7860
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz', timeout=4)"
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+CMD ["python", "webui/main.py"]

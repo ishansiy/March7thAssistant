@@ -217,3 +217,7 @@ CLAUDE.md
 
 # Telemetry server
 telemetry_server/
+# Runtime data and credentials
+webui/data/
+.env*
+config.yaml
