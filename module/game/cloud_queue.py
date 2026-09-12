@@ -8,6 +8,7 @@ const find = selector => [...document.querySelectorAll(selector)].find(visible);
 const dialogs = [...document.querySelectorAll('[role="dialog"], .el-dialog')].filter(visible);
 for (const dialog of dialogs) {
     const text = dialog.innerText || '';
+    if (text.includes('网络错误') && text.includes('当前网络异常')) return 'network_error';
     if (text.includes('连接中断') || text.includes('已中断连接')) return 'disconnected';
     if (text.includes('等待时间较长')) {
         const button = [...dialog.querySelectorAll('button, [role="button"], .el-button')]
@@ -35,6 +36,7 @@ def wait_in_queue(controller, timeout, *, clock=time.monotonic, sleep=time.sleep
     unknown_since = None
     last_status = None
     selections = 0
+    network_retries = 0
     while clock() < deadline:
         status = controller.driver.execute_script(QUEUE_STATE_SCRIPT)
         if status != last_status:
@@ -42,6 +44,31 @@ def wait_in_queue(controller, timeout, *, clock=time.monotonic, sleep=time.sleep
             last_status = status
         if status == 'disconnected':
             raise ConnectionError('云游戏连接已中断')
+        if status == 'network_error':
+            network_retries += 1
+            if network_retries > 3:
+                raise ConnectionError('云游戏服务持续返回网络错误，三次间隔重试均失败')
+            delay = 30 * (2 ** (network_retries - 1))
+            controller.log_info(f'云游戏服务提示网络错误，{delay} 秒后在当前浏览器重试（{network_retries}/3）')
+            dismissed = controller.driver.execute_script("""
+                const dialog = [...document.querySelectorAll('[role="dialog"]')]
+                    .find(el => el.getClientRects().length && el.innerText.includes('网络错误')
+                        && el.innerText.includes('当前网络异常'));
+                if (!dialog) return false;
+                const button = [...dialog.querySelectorAll('button')]
+                    .find(el => el.textContent.trim() === '好的');
+                if (!button) return false;
+                button.click();
+                return true;
+            """)
+            if not dismissed:
+                raise ConnectionError('无法关闭网络错误提示')
+            sleep(min(delay, max(0, deadline - clock())))
+            if clock() >= deadline:
+                break
+            controller._click_enter_game()
+            unknown_since = None
+            continue
         if status == 'game_running':
             if not controller._wait_game_canvas_ready():
                 raise TimeoutError('游戏容器出现，但画面未加载')

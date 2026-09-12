@@ -35,6 +35,7 @@ try:
     queue = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(queue)
     cases = [
+        ('<div role="dialog" class="van-dialog"><div class="van-dialog__header">网络错误</div><div class="van-dialog__message">当前网络异常,请稍后重试</div><button>好的</button></div>', 'network_error', False),
         ('<div class="waiting-in-queue">queue</div>', 'in_queue', True),
         ('<div class="game-player">game</div>', 'game_running', True),
         ('<div class="game-player" style="display:none">old</div>', 'unknown', False),
@@ -47,6 +48,19 @@ try:
         assert driver.execute_script(queue.QUEUE_STATE_SCRIPT) == state, state
         assert driver.execute_script(queue.PAGE_READY_SCRIPT) == ready, state
     assert driver.execute_script('return window.clicked') is True
+    from types import SimpleNamespace
+    driver.execute_script('document.body.innerHTML = arguments[0]', cases[0][0])
+    controller = SimpleNamespace(
+        driver=driver, log_info=print,
+        _click_enter_game=lambda: driver.execute_script(
+            "document.body.innerHTML = '<div class=game-player>ready</div>'"),
+        _wait_game_canvas_ready=lambda: True,
+    )
+    elapsed = [0]
+    def advance(seconds):
+        elapsed[0] += seconds
+    assert queue.wait_in_queue(controller, 120, clock=lambda: elapsed[0], sleep=advance)
+    assert elapsed[0] == 30
     print(f'Chrome renderer, CDP, iframe and screenshot passed in {time.monotonic() - started:.1f}s')
 finally:
     driver.quit()

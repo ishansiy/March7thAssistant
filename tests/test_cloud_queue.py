@@ -15,6 +15,7 @@ class QueueTests(unittest.TestCase):
         controller = SimpleNamespace(
             driver=Mock(), log_info=Mock(),
             _wait_game_canvas_ready=Mock(return_value=ready),
+            _click_enter_game=Mock(),
             cfg=SimpleNamespace(cloud_game_use_paid_time=False),
         )
         values = iter(states)
@@ -23,6 +24,7 @@ class QueueTests(unittest.TestCase):
             if script == queue.QUEUE_STATE_SCRIPT:
                 last[0] = next(values, last[0])
                 return last[0]
+            return True
         controller.driver.execute_script.side_effect = execute
         def sleep(seconds):
             now[0] += seconds
@@ -49,6 +51,17 @@ class QueueTests(unittest.TestCase):
 
     def test_queue_selection_and_continue_waiting(self):
         self.assertTrue(self.run_queue(['select_queue', 'in_queue', 'continue_waiting', 'in_queue', 'game_running']))
+
+    def test_network_dialog_recovers_without_restarting_browser(self):
+        self.assertTrue(self.run_queue(['network_error', 'in_queue', 'game_running']))
+
+    def test_persistent_network_failure_is_explicit_and_bounded(self):
+        with self.assertRaisesRegex(ConnectionError, '三次'):
+            self.run_queue(['network_error'], timeout=600)
+
+    def test_network_backoff_does_not_exceed_queue_deadline(self):
+        with self.assertRaisesRegex(TimeoutError, '排队超时'):
+            self.run_queue(['network_error'], timeout=10)
 
 
 if __name__ == '__main__':
