@@ -248,7 +248,7 @@ const app = Vue.createApp({
       try {
         const token = localStorage.getItem('m7a_webui_token');
         const info = await axios.get('/api/auth/me', {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { 'X-M7A-Token': `Bearer ${token}` }
         });
         this.userInfo = info.data;
         localStorage.setItem('m7a_user_info', JSON.stringify(info.data));
@@ -264,7 +264,7 @@ const app = Vue.createApp({
       this.loginLoading = true;
       try {
         const info = await axios.get('/api/auth/me', {
-          headers: { Authorization: `Bearer ${this.tokenInput}` }
+          headers: { 'X-M7A-Token': `Bearer ${this.tokenInput}` }
         });
         this.userInfo = info.data;
         localStorage.setItem('m7a_webui_token', this.tokenInput);
