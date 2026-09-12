@@ -446,6 +446,10 @@ class CloudGameController(GameControllerBase):
         # 记录 driver 可执行路径和 service，以便后续清理 chromedriver 进程
         self.driver_path = driver_path
         self._webdriver_service = service
+        # The app explicitly waits for its UI. Do not let slow third-party
+        # resources hold navigation/frame commands until Selenium's 120s timeout.
+        if headless:
+            options.page_load_strategy = "eager"
 
         # 关掉 headless 不匹配的浏览器，防止端口冲突
         if self.close_all_m7a_browser(headless=not headless):
@@ -477,6 +481,8 @@ class CloudGameController(GameControllerBase):
                     options = ChromiumOptions()
 
         self.log_info(f"正在启动 {browser_type} 浏览器")
+        if headless:
+            options.page_load_strategy = "eager"
         options.binary_location = browser_path
         options.add_experimental_option("prefs", self.PERFERENCES)  # 允许云游戏权限权限
 
@@ -494,6 +500,7 @@ class CloudGameController(GameControllerBase):
         try:
             self.log_debug("启动浏览器中...")
             self.driver = webdriver_type(service=service, options=options)
+            self.driver.set_page_load_timeout(30)
             self.log_debug("浏览器启动成功")
             # 记录 driver pid（在 driver 成功创建后）
             try:
@@ -1046,12 +1053,16 @@ class CloudGameController(GameControllerBase):
             self.log_error(f"相关页面和截图已经保存到：{dump_dir}")
 
     def _switch_to_login_iframe(self) -> None:
+        self.log_debug("查找登录 iframe...")
         iframe = WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.ID, "mihoyo-login-platform-iframe"))
         )
+        self.log_debug("正在进入登录 iframe...")
         self.driver.switch_to.frame(iframe)
+        self.log_debug("已进入登录 iframe")
 
     def _click_qr_login_button(self) -> None:
+        self.log_debug("查找二维码登录按钮...")
         qr_login_button = WebDriverWait(self.driver, 5).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "div.qr-login-btn"))
         )

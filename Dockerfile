@@ -119,7 +119,7 @@ RUN chmod +x /entrypoint.sh
 ENV PORT=7860 \
     HOME=/mnt/workspace/home \
     XDG_CACHE_HOME=/mnt/workspace/cache \
-    TMPDIR=/mnt/workspace/tmp
+    TMPDIR=/tmp
 EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz', timeout=4)"
 

@@ -13,7 +13,7 @@ HTTP listens on port 7860. The WebUI uses `X-M7A-Token`, avoiding ModelScope's r
 
 All mutable application state is linked to `/mnt/workspace`: `webui/data` (accounts, settings,
 per-account profiles and task history), logs, screenshots, config, browser UserProfile,
-temporary files and caches. Existing files are migrated without overwriting persisted files;
+application temporary files and caches. Chrome IPC/shared-memory files use local `/tmp` because the Studio volume is OSS/FUSE. Existing files are migrated without overwriting persisted files;
 conflicting legacy files remain in a timestamped backup under `/mnt/workspace/migration-backups`.
 Code, Python dependencies, browser binaries and OCR assets remain in the image.
 Never rename or transfer a Studio as a persistence strategy; platform storage retention is separate.

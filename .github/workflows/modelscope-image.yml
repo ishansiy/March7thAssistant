@@ -71,6 +71,7 @@ jobs:
               curl -fsS -H 'X-M7A-Token: Bearer ci-test-only' http://localhost:7860/api/accounts | python -c 'import json,sys; assert any(a["name"] == "persistence-check" for a in json.load(sys.stdin))'
             fi
             docker exec m7a-test python -c 'from pathlib import Path; assert Path("/m7a/webui/data").resolve() == Path("/mnt/workspace/webui/data"); assert Path("/m7a/logs").resolve() == Path("/mnt/workspace/logs")'
+            timeout 45s docker exec m7a-test python deploy/browser_smoke.py
             docker rm -f m7a-test
           done
       - name: Publish validated image
