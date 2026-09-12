@@ -7,6 +7,7 @@ import psutil
 from app.tools.account_manager import load_acc_and_pwd
 from utils.registry.gameaccount import gamereg_uid
 from .starrailcontroller import StarRailController
+from .cloud_entry import click_cloud_entry, raise_if_disconnected
 
 from utils.date import Date
 from utils.console import pause_on_success
@@ -101,7 +102,7 @@ def start_game():
             return auto.click_element(*args, **kwargs)
 
         # 点击进入
-        if cloud_click_element("./assets/images/screen/click_enter.png", "image", 0.9):
+        if click_cloud_entry(auto, log):
             return True
         # 同意浏览器授权
         if cloud_click_element("./assets/images/screen/cloud/agree_to_authorize.png", "image", 0.9, take_screenshot=False):
@@ -188,9 +189,16 @@ def start_game():
             if not cloud_game.enter_cloud_game():
                 raise ConnectionError("进入云游戏失败")
             time.sleep(10)
-            if not wait_until(lambda: cloud_game_check_and_enter(), cfg.start_game_timeout * 60):
+            # Entry recognition is separate from the cloud provider's queue.
+            # Never idle on a streamed title screen until the provider disconnects.
+            if not wait_until(lambda: cloud_game_check_and_enter(), min(cfg.start_game_timeout * 60, 180)):
                 raise TimeoutError("查找并点击进入按钮超时")
             time.sleep(10)
+
+    def wait_for_game_screen():
+        if cfg.cloud_game_enable:
+            raise_if_disconnected(auto)
+        return screen.get_current_screen()
 
     for retry in range(MAX_RETRY):
         try:
@@ -199,7 +207,7 @@ def start_game():
             else:
                 starrail = StarRailController(cfg=cfg, logger=log)
                 start_local_game(starrail)
-            if not wait_until(lambda: screen.get_current_screen(), 6 * 60):
+            if not wait_until(wait_for_game_screen, 6 * 60):
                 log.error("获取当前界面超时")
                 # 确保在重试前停止游戏
                 if cfg.cloud_game_enable:
