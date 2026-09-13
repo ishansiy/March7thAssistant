@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy validated image to the existing free Studio when idle
+        type: boolean
+        default: false
 permissions:
   contents: read
   packages: write
@@ -12,6 +17,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - name: Test cloud entry and disconnect recovery
@@ -19,6 +26,7 @@ jobs:
           python tests/test_cloud_entry.py
           python tests/test_cloud_queue.py
           python tests/test_cloud_storage.py
+          python tests/test_update_studio.py
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
@@ -80,7 +88,27 @@ jobs:
             docker rm -f m7a-test
           done
       - name: Publish validated image
+        id: publish
         run: |
+          set -euo pipefail
           docker tag ghcr.io/ishansiy/march7thassistant:latest ghcr.io/ishansiy/march7thassistant:${{ github.sha }}
           docker push ghcr.io/ishansiy/march7thassistant:${{ github.sha }}
-          docker push ghcr.io/ishansiy/march7thassistant:latest
+          docker push ghcr.io/ishansiy/march7thassistant:latest | tee /tmp/image-push.txt
+          digest=$(sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' /tmp/image-push.txt | tail -1)
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy validated digest when Studio is idle
+        env:
+          MODELSCOPE_API_KEY: ${{ secrets.MODELSCOPE_API_KEY }}
+          WEBUI_TOKEN: ${{ secrets.STUDIO_WEBUI_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        run: python deploy/update_studio.py

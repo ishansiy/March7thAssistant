@@ -1,0 +1,46 @@
+name: Daily upstream update
+on:
+  schedule:
+    - cron: '17 18 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: daily-upstream-update
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Merge upstream while retaining deployment workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch https://github.com/moesnow/March7thAssistant.git main
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo 'Upstream is already merged.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            if ! git merge --no-ff --no-commit FETCH_HEAD; then
+              git diff --name-only --diff-filter=U
+              git merge --abort
+              echo 'Upstream conflicts with local changes; production remains unchanged.' >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            git restore --source=HEAD --staged --worktree .github/workflows
+            git commit -m 'Merge upstream updates; retain custom deployment workflows'
+            git push origin HEAD:main
+          fi
+      - name: Explicitly trigger validated build and deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run modelscope-image.yml --ref main -f deploy=true
+          echo 'Dispatched ModelScope image workflow with tests and deployment. Rebuilding also retries previously deferred deployments.' >> "$GITHUB_STEP_SUMMARY"
