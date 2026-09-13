@@ -14,7 +14,11 @@ APP = 'https://udfca7deb-march7thassistant.ms.fun'
 
 
 def request(url, header, method='GET'):
-    req = urllib.request.Request(url, headers=header, method=method)
+    # ms.fun routes SDK user agents to an inference-only gateway. This is the
+    # Studio's authenticated WebUI API, so use its browser-facing route.
+    headers = {'User-Agent': 'Mozilla/5.0 (compatible; March7thStudioUpdater/1.0)',
+               'Accept': 'application/json', **header}
+    req = urllib.request.Request(url, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=25) as response:
         return json.load(response)
 
