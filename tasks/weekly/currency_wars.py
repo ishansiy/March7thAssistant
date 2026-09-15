@@ -2600,6 +2600,39 @@ class CurrencyWars:
                 self.diamond_count += 1
             self.update_backward()
 
+    def confirm_investment_choice(self, texts, card_crop, fallback_crop, screen_name):
+        """Select one card and only commit its effects after the page has left."""
+        title = texts[0] if texts else None
+        clicked = bool(title and auto.click_element(title, 'text', crop=card_crop,
+                                                   include=False, max_retries=2,
+                                                   press_duration=0.15))
+        if not clicked:
+            clicked = auto.click_element(fallback_crop, 'crop', press_duration=0.15)
+        if not clicked:
+            log.warning('投资选项点击未执行，保留原状态等待重试')
+            return False
+        log.info(f'投资选项已点击: {title or "卡片区域"}，等待确认')
+        time.sleep(2)
+        if not auto.click_element('确认', 'text', max_retries=3,
+                                  crop=(738 / 1920, 927 / 1080, 600 / 1920, 123 / 1080),
+                                  include=False, press_duration=0.15):
+            log.warning('未成功点击投资选项确认按钮')
+            return False
+        absent_frames = 0
+        for _ in range(6):
+            time.sleep(1)
+            if auto.find_element(screen_name, 'text', include=False,
+                                 crop=(850 / 1920, 59 / 1080, 223 / 1920, 77 / 1080)):
+                absent_frames = 0
+            else:
+                absent_frames += 1
+                if absent_frames >= 2:
+                    self.check_special_characters(texts=texts)
+                    log.info('投资选项确认成功，已离开选择页面')
+                    return True
+        log.warning('点击确认后仍停留在选择页面，未计入选项加成')
+        return False
+
     def check_investment_environment(self):
         """
         检查并执行投资环境/策略操作/遭遇节点
@@ -2675,7 +2708,7 @@ class CurrencyWars:
                 for index, texts in enumerate(option_texts):
                     matched_text = self._find_text_in_texts(texts, white_list, include=True)
                     if matched_text:
-                        auto.click_element(button_positions_click[index], 'crop')
+                        selected_index = index
                         log.info(f"检测到{matched_text}选项，尝试点击")
                         has_choose = True
                         break
@@ -2687,7 +2720,7 @@ class CurrencyWars:
                 for index, texts in enumerate(option_texts):
                     matched_text = self._find_text_in_texts(texts, seele_white_list, include=True)
                     if matched_text:
-                        auto.click_element(button_positions_click[index], 'crop')
+                        selected_index = index
                         log.info(f"检测到{matched_text}选项，尝试点击")
                         has_choose = True
                         break
@@ -2720,10 +2753,10 @@ class CurrencyWars:
                     if matched_black_text:
                         log.debug(f"跳过{matched_black_text}选项")
                         continue
-                    if auto.click_element("./assets/images/screen/currency_wars/new.png", "image", 0.9, crop=button_positions[index]):
+                    if auto.find_element("./assets/images/screen/currency_wars/new.png", "image", 0.9, crop=button_positions[index]):
                         log.info("检测到图鉴未收集选项，尝试点击")
                         has_choose = True
-                        self.check_special_characters(texts=texts)
+                        selected_index = index
                         break
 
             if not has_choose:
@@ -2732,19 +2765,17 @@ class CurrencyWars:
                     if matched_black_text:
                         log.debug(f"跳过{matched_black_text}选项")
                         continue
-                    auto.click_element(button_positions_click[index], 'crop')
+                    selected_index = index
                     has_choose = True
                     log.info(f"未检测到图鉴未收集选项，选择第{index + 1}个按钮")
-                    self.check_special_characters(texts=texts)
                     break
 
             if not has_choose:
-                log.error("所有选项均不可选，尝试退出")
-                auto.click_element(button_positions_click[1], 'crop')
-                self.need_exit = True
-            time.sleep(1)
-            if not auto.click_element('确认', 'text', None, 10, crop=(738.0 / 1920, 927.0 / 1080, 457.0 / 1920, 123.0 / 1080), include=True):
-                log.warning('未成功点击选择确认按钮；将在下一轮验证页面，最多尝试3次')
+                log.error("所有投资选项均在排除列表，停止本次货币战争")
+                return False
+            self.confirm_investment_choice(option_texts[selected_index],
+                                           button_positions[selected_index],
+                                           button_positions_click[selected_index], selection_screen)
         else:
             self._selection_attempts = 0
             self._selection_screen = None
