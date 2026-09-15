@@ -9,6 +9,7 @@ from utils.logger.logger import Logger
 from typing import Optional
 from module.automation import auto
 from module.config import cfg
+from module.screen.cloud_menu import recover_phone_menu
 
 
 class Screen(metaclass=SingletonMeta):
@@ -396,6 +397,14 @@ class Screen(metaclass=SingletonMeta):
                 break
             time.sleep(0.5)
         else:
+            if recover_phone_menu(auto, next_screen, cfg.cloud_game_enable):
+                self.logger.info("菜单按键切换未完成，已点击主界面手机图标，等待菜单确认")
+                for _ in range(20):
+                    if self.check_screen(next_screen):
+                        self.logger.info(f"切换到：{green(self.get_name(next_screen))}")
+                        time.sleep(self.wait_screen_change_time)
+                        return
+                    time.sleep(0.5)
             if timeout_operations:
                 self.logger.warning(f"切换到 {self.get_name(next_screen)} 超时，执行超时操作后重新检测")
                 self.perform_operations(timeout_operations)
