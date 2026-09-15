@@ -371,6 +371,19 @@ def list_diagnostics(user: UserInfo = Depends(require_admin)):
                    if p.is_file() and not p.is_symlink() and p.suffix in ('.png', '.html')], reverse=True)
 
 
+@app.get("/api/game-screenshots/{filename}")
+def get_game_screenshot(filename: str, user: UserInfo = Depends(require_admin)):
+    from pathlib import Path
+    directory = (Path(ROOT_DIR) / 'logs' / 'screenshots').resolve()
+    path = directory / filename
+    if (Path(filename).name != filename or path.is_symlink()
+            or path.resolve().parent != directory or path.suffix != '.png'
+            or not path.is_file()):
+        raise HTTPException(status_code=404, detail='Screenshot not found')
+    return FileResponse(path, media_type='image/png',
+                        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
 @app.get("/api/diagnostics/{filename}")
 def get_diagnostic(filename: str, user: UserInfo = Depends(require_admin)):
     from pathlib import Path
