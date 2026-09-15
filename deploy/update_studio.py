@@ -9,8 +9,8 @@ import tempfile
 import time
 import urllib.request
 
-STUDIO = 'https://www.modelscope.ai/openapi/v1/studios/udfca7deb/March7thAssistant'
-APP = 'https://udfca7deb-march7thassistant.ms.fun'
+STUDIO = 'https://modelscope.cn/openapi/v1/studios/hansiy/March7thAssistant'
+APP = 'https://hansiy-march7thassistant.ms.show'
 
 
 def request(url, header, method='GET'):
@@ -58,7 +58,7 @@ def main():
         def git(*args):
             return subprocess.check_output(['git', '-C', str(repo), *args], env=env, text=True).strip()
         subprocess.run(['git', 'clone', '--depth=1',
-                        'https://www.modelscope.ai/studios/udfca7deb/March7thAssistant.git', str(repo)],
+                        'https://modelscope.cn/studios/hansiy/March7thAssistant.git', str(repo)],
                        env=env, check=True)
         dockerfile = repo / 'Dockerfile'
         previous = dockerfile.read_text()
