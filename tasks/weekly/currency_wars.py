@@ -436,6 +436,8 @@ class CurrencyWars:
         """
         self.screenshot = None  # 任务截图
         self.result = None  # 重置结果
+        self._selection_attempts = 0
+        self._selection_screen = None
         self.peipei_count = 0  # 重置佩佩计数
         self.diamond_count = 0  # 重置财富宝钻计数
         self.current_level = 0  # 重置当前可部署角色等级
@@ -484,7 +486,8 @@ class CurrencyWars:
 
                 self.give_up_and_settle()
 
-            self.check_investment_environment()
+            if self.check_investment_environment() is False:
+                return False
             self.check_auto_battle()
             self.check_click_continue()
             self.check_supply_phase()
@@ -2602,6 +2605,23 @@ class CurrencyWars:
         检查并执行投资环境/策略操作/遭遇节点
         """
         if auto.find_element(('投资环境', '请选择投资策略', '遭遇节点'), 'text', None, crop=(850.0 / 1920, 59.0 / 1080, 223.0 / 1920, 77.0 / 1080)):
+            selection_screen = auto.matched_text
+            if getattr(self, '_selection_screen', None) != selection_screen:
+                self._selection_attempts = 0
+            self._selection_screen = selection_screen
+            self._selection_attempts = getattr(self, '_selection_attempts', 0) + 1
+            if self._selection_attempts in (1, 4):
+                try:
+                    os.makedirs('logs/screenshots', exist_ok=True)
+                    path = f'logs/screenshots/currency_selection_{time.strftime("%Y-%m-%d_%H-%M-%S")}_{self._selection_attempts}.png'
+                    auto.take_screenshot()
+                    auto.screenshot.save(path)
+                    log.info(f'货币战争选择诊断截图: {path}')
+                except Exception as exc:
+                    log.warning(f'保存选择截图失败: {type(exc).__name__}')
+            if self._selection_attempts > 3:
+                log.error(f'{selection_screen}连续3次选择后仍未退出，停止本次货币战争，避免空转')
+                return False
             log.info(f"检测到{auto.matched_text}界面，尝试选择")
             time.sleep(2)
             if auto.matched_text == '遭遇节点':
@@ -2723,7 +2743,11 @@ class CurrencyWars:
                 auto.click_element(button_positions_click[1], 'crop')
                 self.need_exit = True
             time.sleep(1)
-            auto.click_element('确认', 'text', None, 10, crop=(738.0 / 1920, 927.0 / 1080, 457.0 / 1920, 123.0 / 1080), include=True)
+            if not auto.click_element('确认', 'text', None, 10, crop=(738.0 / 1920, 927.0 / 1080, 457.0 / 1920, 123.0 / 1080), include=True):
+                log.warning('未成功点击选择确认按钮；将在下一轮验证页面，最多尝试3次')
+        else:
+            self._selection_attempts = 0
+            self._selection_screen = None
 
     def update_backward(self):
         default = 6

@@ -28,6 +28,7 @@ jobs:
           python tests/test_cloud_storage.py
           python tests/test_update_studio.py
           python tests/test_cloud_menu.py
+          python tests/test_currency_selection.py
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
