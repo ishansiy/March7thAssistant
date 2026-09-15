@@ -102,7 +102,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.deploy
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 50
     permissions:
       contents: read
     steps:

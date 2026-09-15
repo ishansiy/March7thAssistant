@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.error
 
 STUDIO = 'https://modelscope.cn/openapi/v1/studios/hansiy/March7thAssistant'
 APP = 'https://hansiy-march7thassistant.ms.show'
@@ -81,17 +82,22 @@ def main():
         if not result.get('success'):
             raise RuntimeError('Studio deployment request failed')
         summary(f'Deploying {digest}. Previous Studio commit for rollback: {previous_commit}')
-    for _ in range(40):
+    deadline = time.monotonic() + 45 * 60
+    while time.monotonic() < deadline:
         time.sleep(15)
         state = request(STUDIO, headers)['data']['status']
         if state == 'Running':
-            if request(APP + '/healthz', {})['status'] == 'ok':
-                request(APP + '/api/status', web_headers)
-                summary('Deployment is Running; health and authenticated API checks passed. Game completion is not asserted.')
-                return
+            try:
+                if request(APP + '/healthz', {})['status'] == 'ok':
+                    request(APP + '/api/status', web_headers)
+                    summary('Deployment is Running; health and authenticated API checks passed. Game completion is not asserted.')
+                    return
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                # Running can precede gateway readiness during container startup.
+                print('Studio is Running; waiting for the application gateway.', flush=True)
         if state in ('Failed', 'BuildFailed', 'RuntimeError', 'Stopped'):
             raise RuntimeError('Studio deployment failed: ' + state)
-    raise TimeoutError('Studio did not become healthy within 10 minutes')
+    raise TimeoutError('Studio did not become healthy within 45 minutes; inspect platform logs before redeploying')
 
 
 if __name__ == '__main__':
