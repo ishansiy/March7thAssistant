@@ -11,9 +11,26 @@ import time
 from module.localization import get_raw_instance_names
 import json
 import re
+from pathlib import Path
+from datetime import datetime
 
 
 class Instance:
+    @staticmethod
+    def save_battle_evidence(stage, fresh=True):
+        """Keep bounded diagnostic frames behind the admin screenshot endpoint."""
+        try:
+            frame = auto.take_screenshot()[0] if fresh else auto.screenshot
+            if frame is None:
+                return
+            directory = Path('logs/screenshots')
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f'battle_{datetime.now():%Y-%m-%d_%H-%M-%S_%f}_{stage}.png'
+            frame.save(path)
+            log.info(f'战斗诊断截图: {path.name}')
+        except Exception as exc:
+            log.warning(f'无法保存战斗诊断截图: {type(exc).__name__}')
+
     @staticmethod
     def run(instance_type, instance_name, attempts_per_run, runs, from_failure=False, runs_completed=0):
         if not Instance.validate_instance(instance_type, instance_name):
@@ -347,7 +364,9 @@ class Instance:
                     time.sleep(1)
                     auto.click_element("./assets/images/zh_CN/base/confirm.png", "image", 0.9)
 
-                Character.borrow()
+                borrowed = Character.borrow()
+                log.info(f'助战流程返回: {borrowed}; 借助战开启: {cfg.borrow_enable}; 强制助战: {cfg.borrow_character_enable}')
+                Instance.save_battle_evidence('before_start')
 
                 if auto.click_element("开始挑战", "text", max_retries=10, crop=(1518 / 1920, 960 / 1080, 334 / 1920, 61 / 1080)):
                     # 检测遗器背包已满的提示
@@ -417,6 +436,7 @@ class Instance:
     def wait_fight(num, timeout=1800):
         log.info("进入战斗")
         time.sleep(5)
+        Instance.save_battle_evidence('battle_start')
 
         start_time = time.monotonic()
         while time.monotonic() - start_time < timeout:
@@ -425,6 +445,7 @@ class Instance:
                 log.info(f"第{num}次副本完成")
                 return True
             elif auto.find_element("./assets/images/zh_CN/fight/fight_fail.png", "image", 0.9):
+                Instance.save_battle_evidence('failure_matched', fresh=False)
                 log.info("战斗失败")
                 log.info(f"获取剩余体力并重新计算轮次")
                 return False
