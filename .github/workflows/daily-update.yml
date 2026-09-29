@@ -24,20 +24,8 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch https://github.com/moesnow/March7thAssistant.git main
-          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
-            echo 'Upstream is already merged.' >> "$GITHUB_STEP_SUMMARY"
-          else
-            if ! git merge --no-ff --no-commit FETCH_HEAD; then
-              git diff --name-only --diff-filter=U
-              git merge --abort
-              echo 'Upstream conflicts with local changes; production remains unchanged.' >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
-            git restore --source=HEAD --staged --worktree .github/workflows
-            git commit -m 'Merge upstream updates; retain custom deployment workflows'
-            git push origin HEAD:main
-          fi
+          bash deploy/sync_upstream.sh
+          git push origin HEAD:main
       - name: Explicitly trigger validated build and deployment
         env:
           GH_TOKEN: ${{ github.token }}

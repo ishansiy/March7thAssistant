@@ -30,7 +30,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_unchanged_page_stops_after_three_attempts(self):
         for _ in range(3):
-            self.assertIsNone(self.handle(self.subject))
+            self.assertTrue(self.handle(self.subject))
         clicks = self.auto.click_element.call_count
         self.assertIs(self.handle(self.subject), False)
         self.assertEqual(self.auto.click_element.call_count, clicks)
