@@ -1,6 +1,8 @@
 import sys
 import time
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 import cv2
 import numpy as np
 from PIL import Image
@@ -15,6 +17,19 @@ from utils.pause import pause_guard
 from module.game import get_game_controller
 from module.ocr import ocr
 from module.config import cfg
+
+
+_screenshot_retry_timeout = ContextVar("screenshot_retry_timeout", default=60.0)
+
+
+@contextmanager
+def screenshot_retry_timeout(timeout: float):
+    """临时调整当前执行上下文的截图重试时限，退出后恢复原值。"""
+    token = _screenshot_retry_timeout.set(max(0.0, float(timeout)))
+    try:
+        yield
+    finally:
+        _screenshot_retry_timeout.reset(token)
 
 
 class Automation(metaclass=SingletonMeta):
@@ -165,6 +180,7 @@ class Automation(metaclass=SingletonMeta):
         :return: 成功时返回截图及其位置和缩放因子，失败时抛出异常。
         """
         start_time = time.monotonic()
+        timeout = _screenshot_retry_timeout.get()
         while True:
             try:
                 result = Screenshot.take_screenshot(
@@ -182,13 +198,16 @@ class Automation(metaclass=SingletonMeta):
                         if crop != (0, 0, 1, 1):
                             self._debug_draw_crop_region(crop)
                     return result
-                else:
+                elif timeout > 0:
                     self.logger.error("截图失败：没有找到游戏窗口")
             except Exception as e:
+                if timeout <= 0:
+                    raise RuntimeError(f"截图失败：{e}") from e
                 self.logger.error(f"截图失败：{e}")
-            time.sleep(1)
-            if time.monotonic() - start_time > 60:
+            remaining = timeout - (time.monotonic() - start_time)
+            if remaining <= 0:
                 raise RuntimeError("截图超时")
+            time.sleep(min(1, remaining))
 
     def calculate_positions(self, template, max_loc, relative):
         """
@@ -303,13 +322,15 @@ class Automation(metaclass=SingletonMeta):
             return None
 
     @pause_guard
-    def find_image_with_multiple_targets(self, target, threshold, scale_range, relative=False):
+    def find_image_with_multiple_targets(self, target, threshold, scale_range, relative=False, mask_top_right_ratio=None):
         try:
             template = ImageUtils.read_image(target, cv2.IMREAD_GRAYSCALE)
             if template is None:
                 raise ValueError(f"读取图片失败：{target}")
             screenshot = cv2.cvtColor(np.array(self.screenshot), cv2.COLOR_BGR2GRAY)
-            matches = ImageUtils.scale_and_match_template_with_multiple_targets(screenshot, template, threshold, scale_range)
+            matches = ImageUtils.scale_and_match_template_with_multiple_targets(
+                screenshot, template, threshold, scale_range, mask_top_right_ratio=mask_top_right_ratio
+            )
             if len(matches) == 0:
                 return []
             new_matches = []
@@ -736,7 +757,7 @@ class Automation(metaclass=SingletonMeta):
             return []
 
     @pause_guard
-    def find_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", retry_delay: float = 1.0, use_background_screenshot=None, prefer_frame_screenshot=True):
+    def find_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", retry_delay: float = 1.0, use_background_screenshot=None, prefer_frame_screenshot=True, mask_top_right_ratio=None):
         """
         查找元素，并根据指定的查找类型执行不同的查找策略。
         :param target: 查找目标，可以是图像路径或文字。
@@ -747,6 +768,7 @@ class Automation(metaclass=SingletonMeta):
         :param take_screenshot: 是否需要先截图。
         :param relative: 返回相对位置还是绝对位置。
         :param scale_range: 图像查找时的缩放范围。
+        :param mask_top_right_ratio: 多目标图像匹配时忽略模板右上角的比例。
         :param include: 文字查找时是否包含目标字符串。
         :param need_ocr: 是否需要执行OCR识别。
         :param source: 查找参照物，用于距离最小化查找。
@@ -799,7 +821,9 @@ class Automation(metaclass=SingletonMeta):
             elif find_type in ['image_count']:
                 return self.find_image_and_count(target, threshold, pixel_bgr)
             elif find_type in ['image_with_multiple_targets']:
-                matches = self.find_image_with_multiple_targets(target, threshold, scale_range, relative)
+                matches = self.find_image_with_multiple_targets(
+                    target, threshold, scale_range, relative, mask_top_right_ratio=mask_top_right_ratio
+                )
                 # 调试模式：绘制所有匹配结果
                 if self._is_debug_enabled() and matches:
                     color = self._get_debug_color(find_type)
