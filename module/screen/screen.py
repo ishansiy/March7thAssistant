@@ -130,7 +130,20 @@ class Screen(metaclass=SingletonMeta):
                 "./assets/images/share/plot/message.png",
                 "./assets/images/share/plot/exit.png",
             )
-            if auto.find_element(continue_img, "image", 0.9, crop=continue_crop):
+            start_crop = (122.0 / 1920, 31.0 / 1080, 98.0 / 1920, 58.0 / 1080)
+            start_imgs = (
+                "./assets/images/share/plot/start.png",
+                "./assets/images/share/plot/start_ps5.png",
+                "./assets/images/share/plot/start_xbox.png",
+            )
+            in_dialog = False
+            for img in start_imgs:
+                if auto.find_element(img, "image", 0.9, crop=start_crop):
+                    in_dialog = True
+                    break
+            if not in_dialog and auto.find_element(continue_img, "image", 0.9, crop=continue_crop):
+                in_dialog = True
+            if in_dialog:
                 clicked = False
                 for opt in options_imgs:
                     if auto.click_element(opt, "image", 0.9, crop=options_crop):
@@ -140,6 +153,8 @@ class Screen(metaclass=SingletonMeta):
                 if not clicked and auto.click_element(continue_img, "image", 0.9, crop=continue_crop):
                     self.logger.info("检测到剧情对话，已点击继续推进")
                     clicked = True
+                if not clicked:
+                    self.logger.info("剧情对话演出中，等待推进")
                 dialog_handled = True
         except Exception as e:
             self.logger.debug(f"剧情对话检测失败：{e}")
