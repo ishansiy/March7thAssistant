@@ -230,6 +230,12 @@ def start_game():
                 start_local_game(starrail)
             if not wait_until(wait_for_game_screen, 6 * 60):
                 log.error("获取当前界面超时")
+                # 诊断：在关闭浏览器前保存页面截图与HTML，供排查识别失败原因
+                if cfg.cloud_game_enable:
+                    try:
+                        cloud_game.try_dump_page()
+                    except Exception as dump_err:
+                        log.warning(f"保存界面诊断失败: {type(dump_err).__name__}")
                 # 确保在重试前停止游戏
                 if cfg.cloud_game_enable:
                     cloud_game.stop_game()
