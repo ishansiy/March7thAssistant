@@ -150,11 +150,15 @@ class Screen(metaclass=SingletonMeta):
                         self.logger.info("检测到剧情对话，已点击对话选项")
                         clicked = True
                         break
+                if clicked:
+                    self.last_dialog_action = time.monotonic()
                 if not clicked and auto.click_element(continue_img, "image", 0.9, crop=continue_crop):
                     self.logger.info("检测到剧情对话，已点击继续推进")
                     clicked = True
                 if not clicked:
                     self.logger.info("剧情对话演出中，等待推进")
+                # 记录最近一次对话推进时间，供外层判断对话仍在进行、避免重启浏览器回退检查点
+                self.last_dialog_action = time.monotonic()
                 dialog_handled = True
         except Exception as e:
             self.logger.debug(f"剧情对话检测失败：{e}")

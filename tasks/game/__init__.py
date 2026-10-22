@@ -228,7 +228,21 @@ def start_game():
             else:
                 starrail = StarRailController(cfg=cfg, logger=log)
                 start_local_game(starrail)
-            if not wait_until(wait_for_game_screen, 6 * 60):
+            def wait_for_screen_dialog_aware():
+                """等待识别出游戏界面；剧情对话持续推进时自动续时，
+                避免重启浏览器导致云游戏对话回退到检查点。"""
+                deadline = time.monotonic() + 6 * 60
+                while True:
+                    if wait_for_game_screen():
+                        return True
+                    last_dialog = getattr(screen, "last_dialog_action", 0)
+                    if last_dialog and time.monotonic() - last_dialog < 180:
+                        deadline = max(deadline, time.monotonic() + 6 * 60)
+                        continue
+                    if time.monotonic() >= deadline:
+                        return False
+
+            if not wait_for_screen_dialog_aware():
                 log.error("获取当前界面超时")
                 # 诊断：在关闭浏览器前保存页面截图与HTML，供排查识别失败原因
                 if cfg.cloud_game_enable:
