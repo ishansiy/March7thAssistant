@@ -118,11 +118,29 @@ class Screen(metaclass=SingletonMeta):
         处理自动重试逻辑，包括按ESC键和处理特定的异常情况。
         """
         self._warn_overlay_monitor_text_if_needed()
-        if auto.click_element("稍后再看", "text", take_screenshot=False):
-            self.logger.info("检测到开拓任务前情提要弹窗，已点击稍后再看")
-        else:
-            auto.press_key("esc")
-            self.logger.warning("未识别出任何界面，请确保游戏画面干净，按ESC后重试")
+        # 剧情对话场景下按ESC无法退出，优先自动推进对话
+        dialog_handled = False
+        try:
+            from tasks.tool.autoplot._detector import SceneDetector
+            if SceneDetector.is_dialog_scene():
+                if SceneDetector.has_dialog_options():
+                    if SceneDetector.click_dialog_option():
+                        self.logger.info("检测到剧情对话，已点击对话选项")
+                        dialog_handled = True
+                if not dialog_handled and SceneDetector.click_continue():
+                    self.logger.info("检测到剧情对话，已点击继续推进")
+                    dialog_handled = True
+                if not dialog_handled:
+                    auto.click_element("稍后再看", "text", take_screenshot=False)
+                    dialog_handled = True
+        except Exception as e:
+            self.logger.debug(f"剧情对话检测失败：{e}")
+        if not dialog_handled:
+            if auto.click_element("稍后再看", "text", take_screenshot=False):
+                self.logger.info("检测到开拓任务前情提要弹窗，已点击稍后再看")
+            else:
+                auto.press_key("esc")
+                self.logger.warning("未识别出任何界面，请确保游戏画面干净，按ESC后重试")
         time.sleep(2)  # 等待屏幕变化
 
         auto.take_screenshot()
