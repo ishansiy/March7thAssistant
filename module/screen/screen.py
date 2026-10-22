@@ -119,20 +119,28 @@ class Screen(metaclass=SingletonMeta):
         """
         self._warn_overlay_monitor_text_if_needed()
         # 剧情对话场景下按ESC无法退出，优先自动推进对话
+        # 注：不能 import tasks.tool.autoplot，其包 __init__ 依赖 PySide6，容器中不可用
         dialog_handled = False
         try:
-            from tasks.tool.autoplot._detector import SceneDetector
-            if SceneDetector.is_dialog_scene():
-                if SceneDetector.has_dialog_options():
-                    if SceneDetector.click_dialog_option():
+            continue_img = "./assets/images/share/plot/continue.png"
+            continue_crop = (941.0 / 1920, 994.0 / 1080, 37.0 / 1920, 46.0 / 1080)
+            options_crop = (1290.0 / 1920, 442.0 / 1080, 74.0 / 1920, 400.0 / 1080)
+            options_imgs = (
+                "./assets/images/share/plot/select.png",
+                "./assets/images/share/plot/message.png",
+                "./assets/images/share/plot/exit.png",
+            )
+            if auto.find_element(continue_img, "image", 0.9, crop=continue_crop):
+                clicked = False
+                for opt in options_imgs:
+                    if auto.click_element(opt, "image", 0.9, crop=options_crop):
                         self.logger.info("检测到剧情对话，已点击对话选项")
-                        dialog_handled = True
-                if not dialog_handled and SceneDetector.click_continue():
+                        clicked = True
+                        break
+                if not clicked and auto.click_element(continue_img, "image", 0.9, crop=continue_crop):
                     self.logger.info("检测到剧情对话，已点击继续推进")
-                    dialog_handled = True
-                if not dialog_handled:
-                    auto.click_element("稍后再看", "text", take_screenshot=False)
-                    dialog_handled = True
+                    clicked = True
+                dialog_handled = True
         except Exception as e:
             self.logger.debug(f"剧情对话检测失败：{e}")
         if not dialog_handled:
