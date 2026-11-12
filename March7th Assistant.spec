@@ -1,7 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
-binaries = []
+sys.path.append(SPECPATH)
+from tools.pyinstaller_openssl import OPENSSL_RUNTIME_HOOKS, python_openssl_binaries
+
+binaries = python_openssl_binaries()
 datas = []
 
 binaries += collect_dynamic_libs('openvino', search_patterns=['openvino_intel_cpu_plugin.dll', 'openvino_onnx_frontend.dll'])
@@ -31,7 +36,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=OPENSSL_RUNTIME_HOOKS,
     excludes=['PySide6'],
     noarchive=False,
     optimize=0,
@@ -81,8 +86,32 @@ exe = EXE(
     icon=['assets\\logo\\Terminal.ico'],
     contents_directory='libraries',
 )
+# 面向脚本与 AI Agent 的命令行入口：与上面同一份程序，只是清单不要求管理员权限。
+# 未提权时可直接查询（--status / --list 等）；运行任务时再通过 UAC 启动 March7th Assistant.exe，
+# 并把输出与退出码转回调用方的终端（见 utils/cli_entry.py）。
+agent_exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='m7a',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    uac_admin=False,
+    icon=['assets\\logo\\Terminal.ico'],
+    contents_directory='libraries',
+)
 coll = COLLECT(
     exe,
+    agent_exe,
     a.binaries,
     a.datas,
     strip=False,

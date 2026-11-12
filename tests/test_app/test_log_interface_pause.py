@@ -12,6 +12,49 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_cooperative_stop_waits_for_cleanup_and_keeps_old_process_identity(monkeypatch,tmp_path):
+    import app.log_interface as module
+    from utils.pause import STATE_STOPPING
+    callbacks=[]
+    monkeypatch.setattr(module.QTimer,'singleShot',lambda _delay,callback:callbacks.append(callback))
+    process=SimpleNamespace(state=lambda:module.QProcess.Running,processId=lambda:123)
+    killed=[]
+    host=SimpleNamespace(process=process,_pauseControlPath=lambda:str(tmp_path/'control.json'),
+                         _killProcessTree=lambda pid:killed.append(pid),appendLog=lambda _:None)
+    host._finishCooperativeStop=lambda p,pid,d:module.LogInterface._finishCooperativeStop(host,p,pid,d)
+    module.LogInterface._finishCooperativeStop(host,process,123,module.time.monotonic()+10)
+    assert killed==[] and callbacks
+    (tmp_path/'control.json.state').write_text(json.dumps({'state':STATE_STOPPING}),encoding='utf-8')
+    callbacks.pop()()
+    assert killed==[123]
+    host.process=SimpleNamespace(state=lambda:module.QProcess.Running,processId=lambda:456)
+    module.LogInterface._finishCooperativeStop(host,process,123,0)
+    assert killed==[123]
+
+
+def test_stop_sends_stop_and_prevents_hotkey_overwriting_it(monkeypatch,tmp_path):
+    import app.log_interface as module
+    callbacks=[]
+    monkeypatch.setattr(module.QTimer,'singleShot',lambda _delay,callback:callbacks.append(callback))
+    process=SimpleNamespace(state=lambda:module.QProcess.Running,processId=lambda:123)
+    killed=[]
+    path=tmp_path/'control.json'
+    host=SimpleNamespace(process=process,_clearTaskTimeout=lambda:None,_pause_supported=True,
+                         _pauseControlPath=lambda:str(path),_killProcessTree=lambda pid:killed.append(pid),
+                         appendLog=lambda _:None,pauseButton=SimpleNamespace(setEnabled=lambda _:None))
+    host._finishCooperativeStop=lambda p,pid,d:module.LogInterface._finishCooperativeStop(host,p,pid,d)
+    module.LogInterface.stopTask(host)
+    assert json.loads(path.read_text(encoding='utf-8'))['command']=='stop'
+    assert killed==[] and len(callbacks)==1
+    module.LogInterface._sendPauseCommand(host,'resume')
+    assert json.loads(path.read_text(encoding='utf-8'))['command']=='stop'
+    module.LogInterface.stopTask(host)
+    assert len(callbacks)==1
+    (tmp_path/'control.json.state').write_text(json.dumps({'state':'stopping'}),encoding='utf-8')
+    callbacks.pop()()
+    assert killed==[123]
+
+
 @pytest.fixture(scope="session")
 def qapp():
     try:
@@ -69,7 +112,7 @@ class TestPausableTasksWhitelist:
     def test_builtin_tasks_in_whitelist(self):
         from utils.tasks import PAUSABLE_TASKS
         for task_id in ("main", "daily", "power", "currencywars", "divergent", "fight",
-                        "universe", "screen_test"):
+                        "universe", "screen_test", "character_export"):
             assert task_id in PAUSABLE_TASKS
 
     def test_non_automation_tasks_not_in_whitelist(self):
@@ -211,7 +254,10 @@ class TestPauseToggle:
         iface = LogInterface.__new__(LogInterface)
         iface._pause_supported = True
         iface._pause_state = STATE_RUNNING
-        iface._status_text_before_pause = None
+        iface._task_status = 'running'
+        iface._task_display_name = '货币战争'
+        iface._task_name_is_msgid = True
+        iface._task_workflow_display = None
         iface._paused_timeout_remaining = None
         iface._timeout_timer = None
         iface.log_lines = []
@@ -219,6 +265,7 @@ class TestPauseToggle:
         iface.isTaskRunning = lambda: True
         iface._pauseControlPath = lambda: str(tmp_path / "pause.json")
         iface.pauseButton = _FakeButton()
+        iface.stopButton = _FakeButton()
         iface.statusLabel = _FakeLabel('正在运行：货币战争')
         iface._log_overlay = SimpleNamespace(set_paused=lambda p: iface.paused_flags.append(p))
         iface.paused_flags = []
@@ -296,7 +343,6 @@ class TestPauseToggle:
             json.dumps({"state": STATE_PAUSED}), encoding="utf-8"
         )
         iface._pause_state = STATE_PAUSED
-        iface._status_text_before_pause = '正在运行：货币战争'
 
         iface._resetPauseRuntime()
 

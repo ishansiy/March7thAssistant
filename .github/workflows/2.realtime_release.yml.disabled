@@ -49,8 +49,8 @@ jobs:
         if: steps.check_version.outputs.should_build == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
-          version: "0.11.15"
-          python-version: "3.14.5"
+          version: "0.13.0"
+          python-version: "3.14.8"
           enable-cache: true
           cache-python: true
           prune-cache: false
@@ -83,6 +83,8 @@ jobs:
           Copy-Item -Path ".\dist\March7th Launcher\*" -Destination ".\dist\March7thAssistant\" -Recurse -Force
           Copy-Item -Path ".\assets\" -Destination ".\dist\March7thAssistant\assets\" -Recurse -Force
           Copy-Item -Path ".\README.md" -Destination ".\dist\March7thAssistant\" -Force
+          # 根目录的 AGENTS.md：在安装目录中打开的 AI Agent 会自动读取，指向随包发布的使用说明（Skill）
+          Copy-Item -Path ".\assets\agent\AGENTS.md" -Destination ".\dist\March7thAssistant\" -Force
 
       # 创建压缩包
       - name: Create archive

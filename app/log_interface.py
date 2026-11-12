@@ -1,6 +1,7 @@
 # coding:utf-8
 from collections import deque
 from copy import deepcopy
+from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, QProcess, QProcessEnvironment, Signal, QTimer, QDateTime, QEvent, QMetaObject, Slot
 from PySide6.QtGui import QFont, QTextCursor
@@ -26,9 +27,10 @@ from .common.schedule import (task_trigger_mode, scheduled_task_slot,
 from module.config import cfg
 from module.game import get_game_controller
 from utils.tasks import TASK_NAMES, PAUSABLE_TASKS
-from utils.pause import (COMMAND_PAUSE, COMMAND_RESUME, STATE_PAUSING, STATE_PAUSED,
-                         STATE_RUNNING, write_command, read_state, reset_files)
+from utils.pause import (COMMAND_PAUSE, COMMAND_RESUME, COMMAND_STOP, STATE_PAUSING, STATE_PAUSED,
+                         STATE_RUNNING, STATE_STOPPING, write_command, read_state, reset_files)
 from utils.desktop import open_log_folder
+from utils.desktop_twin import in_desktop_twin
 from .schedule_dialog import ScheduleManagerDialog
 from module.notification import notif
 from module.localization import tr
@@ -141,7 +143,7 @@ class GameLogOverlay(QWidget):
         headerLayout.setContentsMargins(0, 0, 0, 0)
         headerLayout.setSpacing(8)
 
-        self.titleLabel = QLabel(f'任务日志', self.panel)
+        self.titleLabel = QLabel(tr('任务日志'), self.panel)
         self.titleLabel.setObjectName('gameLogOverlayTitle')
 
         self.liveBadge = QLabel(cfg.version, self.panel)
@@ -190,6 +192,12 @@ class GameLogOverlay(QWidget):
 
         self.resize(420, 188)
         self.hide()
+
+    def retranslateUi(self):
+        """刷新现有浮窗的文案，不重建窗口或清空任务日志。"""
+        self.titleLabel.setText(tr('任务日志'))
+        self.pauseBadge.setText(tr('已暂停'))
+        self.setDetectedUpdateVersion(self.detected_update_version)
 
     def setDetectedUpdateVersion(self, version: str | None):
         self.detected_update_version = version or None
@@ -303,6 +311,12 @@ class GameLogOverlay(QWidget):
             self.hide()
 
 
+@dataclass
+class _TaskSequence:
+    succeeded: bool = True
+    finished: bool = False
+
+
 class LogInterface(ScrollArea):
     """日志界面"""
 
@@ -311,7 +325,9 @@ class LogInterface(ScrollArea):
     MAX_LOG_LINES = 5000
 
     # 信号：任务完成
-    taskFinished = Signal(int)  # exit_code
+    taskFinished = Signal(int)  # 单个任务的 exit_code，保留原有通知语义
+    taskSequenceFinished = Signal(int)  # 整条任务链结束，只有全部成功才为 0
+    taskStarted = Signal()
     # 信号：请求停止任务（用于从全局热键线程安全调用）
     stopTaskRequested = Signal()
     # 信号：请求切换任务暂停/继续（用于从全局热键线程安全调用）
@@ -325,6 +341,12 @@ class LogInterface(ScrollArea):
         super().__init__(parent=parent)
         self.process = None
         self.current_task = None
+        self._task_sequence = None
+        # 保存语言无关的状态，而不是缓存暂停前的译文。
+        self._task_status = 'waiting'
+        self._task_display_name = None
+        self._task_name_is_msgid = False
+        self._task_workflow_display = None
         self.detected_update_version = None
         self._external_task_active = False
         self._external_task_name = None
@@ -369,7 +391,6 @@ class LogInterface(ScrollArea):
         # 暂停功能状态（仅内置任务支持，见 utils.tasks.PAUSABLE_TASKS）
         self._pause_supported = False
         self._pause_state = STATE_RUNNING  # running / pausing / paused（以 CLI 回执为准）
-        self._status_text_before_pause = None
         self._paused_timeout_remaining = None
         # 暂停全局热键状态
         self._pause_hotkey_registered = False
@@ -580,6 +601,65 @@ class LogInterface(ScrollArea):
         self.detected_update_version = version or None
         if self._log_overlay:
             self._log_overlay.setDetectedUpdateVersion(self.detected_update_version)
+
+    def retranslateOverlay(self):
+        """语言切换时保留正在运行的任务及其暂停状态。"""
+        if self._log_overlay:
+            self._log_overlay.retranslateUi()
+            self._updateOverlayHotkeyHint()
+
+    def retranslateUi(self):
+        """只刷新文案，不触碰进程、热键注册、日志文档或定时器。"""
+        StyleSheet.LOG_INTERFACE.apply(self)
+        self.titleLabel.setText(tr('任务日志'))
+        self._refreshTaskStatus()
+        self._refreshTaskButtonText()
+        self.pauseButton.setToolTip(tr('仅内置任务支持暂停，暂停后脚本将停止一切操作'))
+        self.logOverlayLabel.setText(tr('在游戏内显示日志'))
+        self.logOverlayLabel.setToolTip(tr('在游戏内显示日志'))
+        self.logOverlaySwitch.setOnText(tr('开'))
+        self.logOverlaySwitch.setOffText(tr('关'))
+        self.logOverlaySwitch.setAccessibleName(tr('在游戏内显示日志'))
+        self.logOverlaySwitch.setToolTip(tr('在游戏内显示日志'))
+        self._updateScheduleStatusLabel()
+        self.retranslateOverlay()
+
+    def _setRunningStatus(self, name, *, translate_name=False, workflow_display=None):
+        self._task_status = 'running'
+        self._task_display_name = name
+        self._task_name_is_msgid = translate_name
+        # 与编辑页和调用方任务字典解耦，语言切换不重新读取可变的流程模型。
+        self._task_workflow_display = deepcopy(workflow_display)
+        self._refreshTaskStatus()
+
+    def _refreshTaskStatus(self):
+        if self._task_status == 'running':
+            if self._pause_state == STATE_PAUSED:
+                text = tr('已暂停')
+            else:
+                if self._task_workflow_display is not None:
+                    from module.workflow import format_workflow_task_name
+                    display = self._task_workflow_display
+                    name = format_workflow_task_name(display['workflow_name'], display['step'])
+                else:
+                    name = tr(self._task_display_name) if self._task_name_is_msgid else self._task_display_name
+                text = tr('正在运行：{name}').format(name=name)
+        elif self._task_status == 'completed':
+            text = tr('任务完成')
+        elif self._task_status == 'stopped':
+            text = tr('任务已停止')
+        else:
+            text = tr('等待任务...')
+        self.statusLabel.setText(text)
+
+    def _refreshTaskButtonText(self):
+        stop_text = tr('停止任务')
+        pause_text = tr('继续任务') if self._pause_state == STATE_PAUSED else tr('暂停任务')
+        if sys.platform == 'win32':
+            stop_text += f" ({cfg.get_value('hotkey_stop_task', 'f10').upper()})"
+            pause_text += f" ({cfg.get_value('hotkey_pause_task', 'f8').upper()})"
+        self.stopButton.setText(stop_text)
+        self.pauseButton.setText(pause_text)
 
     def _hideLogOverlay(self):
         if self._log_overlay:
@@ -840,17 +920,8 @@ class LogInterface(ScrollArea):
         self._registerGlobalHotkey()
         self._registerAutoplotHotkey()
         self._registerPauseHotkey()
-        if sys.platform == 'win32':
-            # 更新按钮文本
-            hotkey = cfg.get_value("hotkey_stop_task", "f10").upper()
-            self.stopButton.setText(f"{tr('停止任务')} ({hotkey})")
-            pause_hotkey = cfg.get_value("hotkey_pause_task", "f8").upper()
-            self.pauseButton.setText(f"{tr('暂停任务')} ({pause_hotkey})")
-            # 同步更新悬浮窗的快捷键提示（不支持暂停的任务只显示停止快捷键）
-            self._updateOverlayHotkeyHint()
-        else:
-            self.stopButton.setText(tr('停止任务'))
-            self.pauseButton.setText(tr('暂停任务'))
+        self._refreshTaskButtonText()
+        self._updateOverlayHotkeyHint()
 
     def _registerAutoplotHotkey(self):
         """注册自动对话全局热键"""
@@ -945,6 +1016,8 @@ class LogInterface(ScrollArea):
         return bool(self.process and self.process.state() != QProcess.NotRunning) or self._external_task_active
 
     def runScheduledTask(self, task, tasks=None, manual=False) -> bool:
+        if getattr(self, "_desktop_twin_hosting", False):
+            return False
         task_dict = self._buildScheduledTaskPayload(task)
         chain = self._buildScheduledTaskChain(task, tasks)
 
@@ -1079,6 +1152,8 @@ class LogInterface(ScrollArea):
 
     def _checkScheduledTime(self, now=None):
         """检查是否到达任意已启用的定时任务时间并触发对应任务"""
+        if getattr(self, "_desktop_twin_hosting", False):
+            return
         # 任务暂停期间不触发定时任务，避免打断暂停或为启动新任务而强制停止当前任务
         if self._pause_state in (STATE_PAUSING, STATE_PAUSED):
             self._updateScheduleStatusLabel()
@@ -1154,6 +1229,9 @@ class LogInterface(ScrollArea):
         return timer is not None
 
     def _schedulePostAction(self, action):
+        if in_desktop_twin():
+            self.appendLog("桌面分身已跳过系统完成后操作\n")
+            return
         self._cancelPendingPostAction()
         label = self._post_action_label(action)
         self.appendLog(f"任务完成后操作： {label}（将在60秒后执行，可通过停止按钮取消）\n")
@@ -1175,8 +1253,11 @@ class LogInterface(ScrollArea):
         self.stopButton.setEnabled(True)
         timer.start(60000)
 
-    def startTask(self, command_or_task):
+    def startTask(self, command_or_task, *, _sequence=None):
         """启动任务"""
+        if getattr(self, "_desktop_twin_hosting", False):
+            self.appendLog("当前由分身内的小助手运行任务\n")
+            return
         # 如果有正在运行的任务，先停止
         if self.process and self.process.state() == QProcess.Running:
             self._suppress_chain_continuation_once = True
@@ -1184,6 +1265,9 @@ class LogInterface(ScrollArea):
             # 等待进程结束
             self.process.waitForFinished(3000)
 
+        # 只有链内续跑复用结果；手动启动、定时触发及冲突替换均开始新的一次运行。
+        self._task_sequence = _sequence if _sequence is not None else _TaskSequence()
+        self.taskStarted.emit()
         if self._cancelPendingPostAction():
             self.appendLog("已取消完成后操作\n")
         self._clearTaskTimeout()
@@ -1269,7 +1353,7 @@ class LogInterface(ScrollArea):
             self.appendLog(f"命令: {executable_path} {' '.join(args_list)}\n")
 
             self.current_task = program
-            self.statusLabel.setText(tr('正在运行：{name}').format(name=name))
+            self._setRunningStatus(name, workflow_display=task.get('workflow_display') if workflow_launch else None)
             self.stopButton.setEnabled(True)
             self._syncPauseUi()
 
@@ -1289,6 +1373,8 @@ class LogInterface(ScrollArea):
             raise RuntimeError(tr('任务正在运行'))
 
         self._pending_task_meta = None
+        self._task_sequence = _TaskSequence()
+        self.taskStarted.emit()
         self._external_task_active = True
         self._external_task_name = str(task_name)
         self._external_task_stop_callback = stop_callback
@@ -1298,7 +1384,7 @@ class LogInterface(ScrollArea):
 
         self.clearLog()
         self.appendLog("========== 开始任务: {} ==========".format(self._external_task_name) + "\n")
-        self.statusLabel.setText(tr('正在运行：{name}').format(name=self._external_task_name))
+        self._setRunningStatus(self._external_task_name)
         self.stopButton.setEnabled(True)
         self._syncPauseUi()
 
@@ -1330,7 +1416,10 @@ class LogInterface(ScrollArea):
         self.current_task = None
         self._hideLogOverlay()
         self._updateFinishedStatus(effective_exit_code)
+        sequence = self._task_sequence
+        sequence.succeeded = effective_exit_code == 0
         self.taskFinished.emit(effective_exit_code)
+        self._finishTaskSequence(sequence)
 
     def _startTask(self, task, timeout=0):
         self.current_task = task
@@ -1338,7 +1427,6 @@ class LogInterface(ScrollArea):
         # 内置任务按白名单启用暂停（workflow 与外部任务的判定见 _resolvePauseSupport）
         self._pause_supported = self._resolvePauseSupport(command)
         self._pause_state = STATE_RUNNING
-        self._status_text_before_pause = None
         self._paused_timeout_remaining = None
         task_msgid = TASK_NAMES.get(command, command)
         self.clearLog()
@@ -1346,7 +1434,7 @@ class LogInterface(ScrollArea):
         self.appendLog("========== 开始任务: {} ==========".format(task_msgid) + "\n")
 
         # 更新状态
-        self.statusLabel.setText(tr('正在运行：{name}').format(name=tr(task_msgid)))
+        self._setRunningStatus(task_msgid, translate_name=True)
         # self.statusLabel.setStyleSheet("color: #0078d4;")
         self.stopButton.setEnabled(True)
         self._syncPauseUi()
@@ -1425,6 +1513,9 @@ class LogInterface(ScrollArea):
 
     def stopTask(self, user_initiated=True):
         """停止任务"""
+        if (getattr(self, '_cooperative_stop_process', None) is getattr(self, 'process', None)
+                and getattr(self, 'process', None) is not None):
+            return
         # 取消任何挂起的超时定时器
         self._clearTaskTimeout()
 
@@ -1481,11 +1572,37 @@ class LogInterface(ScrollArea):
             except Exception:
                 pass
             if pid > 0:
+                if getattr(self, '_pause_supported', False):
+                    try:
+                        write_command(self._pauseControlPath(), COMMAND_STOP)
+                        proc = self.process
+                        self._cooperative_stop_process = proc
+                        if getattr(self, 'pauseButton', None) is not None:
+                            self.pauseButton.setEnabled(False)
+                        deadline = time.monotonic() + 2
+                        QTimer.singleShot(100, lambda: self._finishCooperativeStop(proc, pid, deadline))
+                        return
+                    except Exception as e:
+                        self.appendLog(f"发送停止清理指令失败: {e}\n")
                 self._killProcessTree(pid)
             else:
                 self.process.terminate()
                 # 等待一段时间，如果还没结束就强制杀死
                 QTimer.singleShot(3000, self._forceKillProcess)
+
+    def _finishCooperativeStop(self, process, pid, deadline):
+        # 旧停止回调不能终止后来启动的新任务。
+        if (process is not self.process or process.state() != QProcess.Running
+                or process.processId() != pid):
+            return
+        cleaned = read_state(self._pauseControlPath()) == STATE_STOPPING
+        if cleaned or time.monotonic() >= deadline:
+            if not cleaned:
+                self.appendLog("未收到输入清理回执，强制停止任务\n")
+            if process.processId() == pid:
+                self._killProcessTree(pid)
+            return
+        QTimer.singleShot(100, lambda: self._finishCooperativeStop(process, pid, deadline))
 
     def _killProcessTree(self, pid):
         """杀死进程树（包括所有子进程）"""
@@ -1641,7 +1758,8 @@ class LogInterface(ScrollArea):
 
     def _pauseControlPath(self):
         """暂停指令文件路径（CLI 通过环境变量 MARCH7TH_CONTROL_FILE 读取同一路径）。"""
-        return os.path.abspath(os.path.join('temp', 'pause.json'))
+        name = f'pause-{os.getpid()}.json' if in_desktop_twin() else 'pause.json'
+        return os.path.abspath(os.path.join('temp', name))
 
     def _injectPauseControlEnv(self, env):
         """向子进程注入暂停控制文件路径并清理陈旧状态。"""
@@ -1679,6 +1797,9 @@ class LogInterface(ScrollArea):
 
     def _sendPauseCommand(self, command):
         """写入暂停/恢复指令并即时反馈界面（最终状态以 CLI 回执为准）。"""
+        if (getattr(self, '_cooperative_stop_process', None) is getattr(self, 'process', None)
+                and getattr(self, 'process', None) is not None):
+            return
         try:
             write_command(self._pauseControlPath(), command)
         except Exception as e:
@@ -1702,6 +1823,8 @@ class LogInterface(ScrollArea):
             state = read_state(self._pauseControlPath())
         except Exception:
             state = None
+        if state == STATE_STOPPING:
+            return
         if state and state != self._pause_state:
             self._pause_state = state
             self._syncPauseUi()
@@ -1711,19 +1834,8 @@ class LogInterface(ScrollArea):
         paused = self._pause_state == STATE_PAUSED
         try:
             self.pauseButton.setEnabled(bool(self._pause_supported))
-            if sys.platform == 'win32':
-                pause_hotkey = cfg.get_value("hotkey_pause_task", "f8").upper()
-                pause_text = tr('继续任务') if paused else tr('暂停任务')
-                self.pauseButton.setText(f"{pause_text} ({pause_hotkey})")
-            else:
-                self.pauseButton.setText(tr('继续任务') if paused else tr('暂停任务'))
-            if paused:
-                if self._status_text_before_pause is None:
-                    self._status_text_before_pause = self.statusLabel.text()
-                self.statusLabel.setText(tr('已暂停'))
-            elif self._status_text_before_pause is not None:
-                self.statusLabel.setText(self._status_text_before_pause)
-                self._status_text_before_pause = None
+            self._refreshTaskButtonText()
+            self._refreshTaskStatus()
             self._updateOverlayHotkeyHint()
             if self._log_overlay:
                 self._log_overlay.set_paused(paused)
@@ -1752,9 +1864,9 @@ class LogInterface(ScrollArea):
     def _resetPauseRuntime(self):
         """任务收尾时复位暂停状态并清理控制文件。"""
         self._pause_supported = False
+        self._cooperative_stop_process = None
         self._pause_state = STATE_RUNNING
         self._paused_timeout_remaining = None
-        self._status_text_before_pause = None
         try:
             reset_files(self._pauseControlPath())
         except Exception:
@@ -1981,6 +2093,10 @@ class LogInterface(ScrollArea):
             if process is not self.process or getattr(process, '_task_finalized', False):
                 return
             process._task_finalized = True
+        # taskkill/进程崩溃不会执行子进程 finally；只恢复已确认退出的备份。
+        from utils.temporary_graphics import recover_temporary_graphics
+        from module.logger import log
+        recover_temporary_graphics(log)
         # 终止并清理任何和当前任务绑定的超时定时器
         self._clearTaskTimeout()
         # 复位暂停状态并清理控制文件
@@ -2011,7 +2127,14 @@ class LogInterface(ScrollArea):
                     pass
                 self.appendLog(f"任务异常结束，退出码: {exit_code}\n")
 
+        sequence = getattr(self, '_task_sequence', None)
+        if sequence is None or sequence.finished:
+            sequence = self._task_sequence = _TaskSequence()
         suppress_chain_continuation = bool(getattr(self, '_suppress_chain_continuation_once', False))
+        sequence.succeeded = sequence.succeeded and (
+            exit_status == QProcess.NormalExit and exit_code == 0 and
+            not user_stop and not self._stopped_abnormally and not suppress_chain_continuation
+        )
         self._suppress_chain_continuation_once = False
         next_chain_task = None
         try:
@@ -2041,6 +2164,7 @@ class LogInterface(ScrollArea):
                     if remaining:
                         self.appendLog('链式任务已中断，未继续执行: {}'.format(remaining) + "\n")
         except Exception:
+            sequence.succeeded = False
             next_chain_task = None
             self._active_task_chain = []
             try:
@@ -2066,7 +2190,11 @@ class LogInterface(ScrollArea):
                         for proc_name in proc_list:
                             try:
                                 if os.name == 'nt':
-                                    sp.run(['taskkill', '/IM', proc_name, '/F'], capture_output=True, creationflags=sp.CREATE_NO_WINDOW)
+                                    command = ['taskkill', '/IM', proc_name, '/F']
+                                    if in_desktop_twin():
+                                        from utils.windows_session import process_session_id
+                                        command += ['/FI', f'SESSION eq {process_session_id()}']
+                                    sp.run(command, capture_output=True, creationflags=sp.CREATE_NO_WINDOW)
                                 else:
                                     sp.run(['pkill', '-f', proc_name], capture_output=True)
                                 self.appendLog(f"已终止进程: {proc_name}\n")
@@ -2156,7 +2284,7 @@ class LogInterface(ScrollArea):
             try:
                 next_meta, next_task_dict = next_chain_task
                 self._pending_task_meta = next_meta
-                self.startTask(next_task_dict)
+                self.startTask(next_task_dict, _sequence=sequence)
                 if self._hasActiveStartedProcess():
                     name = next_meta.get('name') or tr('未命名')
                     self.appendLog('链式启动下一任务: {}'.format(name) + "\n")
@@ -2166,10 +2294,12 @@ class LogInterface(ScrollArea):
                     return
                 self._pending_task_meta = None
                 self._active_task_chain = []
+                sequence.succeeded = False
                 self.appendLog('链式启动下一任务失败: {}'.format(next_meta.get('name') or '未命名') + "\n")
             except Exception as e:
                 self._pending_task_meta = None
                 self._active_task_chain = []
+                sequence.succeeded = False
                 self.appendLog(f"链式启动任务失败: {e}\n")
 
         # 如果有排队的延迟启动任务（由于冲突设置导致在停止当前任务后再启动），在进程结束处理完成后启动它
@@ -2206,6 +2336,38 @@ class LogInterface(ScrollArea):
                     self.appendLog(f"延迟启动任务失败: {e}\n")
         except Exception:
             pass
+
+        self._finishTaskSequence(sequence)
+
+    def _finishTaskSequence(self, sequence):
+        """收尾完成且没有后续任务时才通知主窗口，忽略嵌套启动失败造成的重复回调。"""
+        if sequence is not self._task_sequence or sequence.finished:
+            return
+        if self._hasActiveStartedProcess() or self._active_task_chain or self._pending_start_task_after_stop:
+            return
+        sequence.finished = True
+        self.taskSequenceFinished.emit(0 if sequence.succeeded else 1)
+
+    def autoCloseBlockReason(self, preserve_schedule=True):
+        """自动关闭前再次检查运行状态；不取消任务、定时器或完成后操作。"""
+        twin_active = getattr(getattr(self.window(), "toolsInterface", None), "desktopTwinActive", None)
+        if twin_active and twin_active():
+            return "桌面分身仍在使用"
+        if self._hasActiveStartedProcess() or self._active_task_chain or self._pending_start_task_after_stop:
+            return "仍有运行中或排队的任务"
+        if self._pending_post_action_timer or self._pending_post_action:
+            return "仍有等待执行的完成后操作"
+        if preserve_schedule:
+            tasks = cfg.get_value('scheduled_tasks', []) or []
+            if any(task.get('enabled', True) and task_trigger_mode(task) == 'time' for task in tasks):
+                return "仍有已启用的按时任务"
+        return None
+
+    def setDesktopTwinHosting(self, active):
+        self._desktop_twin_hosting = active
+        if not active:
+            # 交回定时时跳过当前分钟，避免和分身实例重复触发同一时间槽。
+            self._last_schedule_minute = QDateTime.currentDateTime().toSecsSinceEpoch() // 60
 
     def _onProcessError(self, error, process=None):
         """进程错误"""
@@ -2318,12 +2480,8 @@ class LogInterface(ScrollArea):
         except Exception:
             pass
 
-        if exit_code == 0:
-            self.statusLabel.setText(tr('任务完成'))
-            # self.statusLabel.setStyleSheet("color: green;")
-        else:
-            self.statusLabel.setText(tr('任务已停止'))
-            # self.statusLabel.setStyleSheet("color: orange;")
+        self._task_status = 'completed' if exit_code == 0 else 'stopped'
+        self._refreshTaskStatus()
 
     def isTaskRunning(self):
         """检查任务是否正在运行"""

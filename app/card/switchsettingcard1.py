@@ -36,9 +36,10 @@ class SwitchSettingCard1(SettingCard):
 
     checkedChanged = Signal(bool)
 
-    def __init__(self, icon: Union[str, QIcon, FluentIconBase], title, content=None, configname: str = None, parent=None):
+    def __init__(self, icon: Union[str, QIcon, FluentIconBase], title, content=None, configname: str = None, parent=None, *, confirm=None):
         super().__init__(icon, title, content, parent)
         self.configname = configname
+        self._confirm = confirm
         self.switchButton = SwitchButton(tr('关'), self, IndicatorPosition.RIGHT)
 
         try:
@@ -46,6 +47,7 @@ class SwitchSettingCard1(SettingCard):
         except Exception:
             self.setValue(False)
 
+        self._acceptedValue = self.switchButton.isChecked()
         # add switch button to layout
         self.hBoxLayout.addWidget(self.switchButton, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(16)
@@ -54,6 +56,16 @@ class SwitchSettingCard1(SettingCard):
 
     def __onCheckedChanged(self, isChecked: bool):
         """ switch button checked state changed slot """
+        if (isChecked != self._acceptedValue and self._confirm is not None
+                and not self._confirm(isChecked)):
+            # 确认前不保存；取消/关闭弹窗后恢复开关且不递归弹窗。
+            self.switchButton.blockSignals(True)
+            try:
+                self.setValue(self._acceptedValue)
+            finally:
+                self.switchButton.blockSignals(False)
+            return
+        self._acceptedValue = isChecked
         self.setValue(isChecked)
         cfg.set_value(self.configname, isChecked)
 
@@ -277,7 +289,9 @@ class SwitchSettingCardGardenofplenty(SettingCard):
         for text, option in zip(texts, texts):
             self.comboBox.addItem(tr(text), userData=option)
 
-        self.comboBox.setCurrentText(cfg.get_value("activity_gardenofplenty_instance_type"))
+        index = self.comboBox.findData(cfg.get_value("activity_gardenofplenty_instance_type"))
+        # 未配置或旧值无法匹配时，保留默认首项，避免出现空白选项。
+        self.comboBox.setCurrentIndex(max(0, index))
         self.comboBox.currentIndexChanged.connect(self._onCurrentIndexChanged)
 
         self.switchButton = SwitchButton(tr('关'), self, IndicatorPosition.RIGHT)

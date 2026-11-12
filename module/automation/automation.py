@@ -56,6 +56,9 @@ class Automation(metaclass=SingletonMeta):
 
         所有输入均包一层暂停卡点（`pause_guard`）：暂停期间任何键鼠输入都会停在发出之前。
         """
+        previous = getattr(self, 'input_handler', None)
+        if previous is not None and callable(getattr(previous, 'close', None)):
+            previous.close()
         self.input_handler = get_game_controller().get_input_handler()
         self.mouse_click = pause_guard(self.input_handler.mouse_click)
         self.mouse_down = pause_guard(self.input_handler.mouse_down)
@@ -69,6 +72,9 @@ class Automation(metaclass=SingletonMeta):
         self.secretly_press_key = pause_guard(self.input_handler.secretly_press_key)
         self.press_mouse = pause_guard(self.input_handler.press_mouse)
         self.secretly_write = pause_guard(self.input_handler.secretly_write)
+
+    def close_input(self):
+        self.input_handler.close()
 
     def _is_debug_enabled(self):
         """检查调试模式是否启用。"""
@@ -182,12 +188,19 @@ class Automation(metaclass=SingletonMeta):
         start_time = time.monotonic()
         timeout = _screenshot_retry_timeout.get()
         while True:
+            handler = getattr(self, 'input_handler', None)
+            background = getattr(handler, 'is_background', False) is True
+            if background:
+                # 窗口暂时不可用（最小化、重建等）时等待恢复，与前台截图找不到窗口时的重试时限一致；
+                # 游戏进程已退出或超时则抛出写明原因的异常。
+                handler.wait_for_window(max(0.0, timeout - (time.monotonic() - start_time)))
             try:
                 result = Screenshot.take_screenshot(
                     self.window_title,
                     crop=crop,
                     use_background_screenshot=use_background_screenshot,
                     prefer_frame_screenshot=prefer_frame_screenshot,
+                    require_background=background,
                 )
                 if result:
                     self.screenshot, self.screenshot_pos, self.screenshot_scale_factor = result
@@ -199,7 +212,7 @@ class Automation(metaclass=SingletonMeta):
                             self._debug_draw_crop_region(crop)
                     return result
                 elif timeout > 0:
-                    self.logger.error("截图失败：没有找到游戏窗口")
+                    self.logger.error("截图失败：未能获取游戏窗口画面" if background else "截图失败：没有找到游戏窗口")
             except Exception as e:
                 if timeout <= 0:
                     raise RuntimeError(f"截图失败：{e}") from e
@@ -874,28 +887,40 @@ class Automation(metaclass=SingletonMeta):
         for _ in range(cnt):
             if action == "click":
                 if normalized_press_duration > 0:
-                    self.mouse_down(x, y)
+                    if self.mouse_down(x, y) is False:
+                        return False
                     time.sleep(normalized_press_duration)
-                    self.mouse_up()
+                    result = self.mouse_up()
                 else:
-                    self.mouse_click(x, y)
+                    result = self.mouse_click(x, y)
             elif action == "down":
-                self.mouse_down(x, y)
+                result = self.mouse_down(x, y)
+                if result is False:
+                    return False
                 if normalized_press_duration > 0:
                     time.sleep(normalized_press_duration)
             elif action == "up":
-                self.mouse_move(x, y)
-                self.mouse_up()
+                moved = self.mouse_move(x, y)
+                result = self.mouse_up()
+                if moved is False:
+                    return False
             elif action == "move":
-                self.mouse_move(x, y)
+                result = self.mouse_move(x, y)
+            if result is False:
+                return False
 
         return True
 
-    def drag_mouse(self, start, end, duration=0.5):
-        """按归一化坐标将鼠标从 start 拖动到 end。"""
+    def drag_mouse(self, start, end, duration=0.5, end_pause=0.0, repeats=1):
+        """按归一化坐标连续拖动，只截图定位一次，仅最后一次可在终点停留。"""
         duration = float(duration)
         if not math.isfinite(duration) or not 0 <= duration <= 60:
             raise ValueError("滑动时长必须在 0 到 60 秒之间")
+        end_pause = float(end_pause)
+        if not math.isfinite(end_pause) or not 0 <= end_pause <= 1:
+            raise ValueError("拖动末尾停留时长必须在 0 到 1 秒之间")
+        if isinstance(repeats, bool) or not isinstance(repeats, int) or not 1 <= repeats <= 10:
+            raise ValueError("连续拖动次数必须是 1 到 10 之间的整数")
         if any(not 0 <= value <= 1 for value in (*start, *end)):
             raise ValueError("坐标必须在 0 到 1 之间")
         self.take_screenshot()
@@ -913,6 +938,10 @@ class Automation(metaclass=SingletonMeta):
         end_xy = (offset_x + min(int(end[0] * width), width - 1),
                   offset_y + min(int(end[1] * height), height - 1))
 
+        if repeats != 1:
+            return bool(self.mouse_drag(*start_xy, *end_xy, duration, end_pause, repeats))
+        if end_pause:
+            return bool(self.mouse_drag(*start_xy, *end_xy, duration, end_pause))
         return bool(self.mouse_drag(*start_xy, *end_xy, duration))
 
     def click_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", offset=(0, 0), action="click", retry_delay: float = 1.0, use_background_screenshot=None, press_duration: float = 0.0, prefer_frame_screenshot=True):
